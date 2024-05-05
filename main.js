@@ -2,12 +2,12 @@ import { Octokit } from "octokit"
 import OptionParser from "option-parser"
 import cliProgress from "cli-progress"
 
+const octokit = new Octokit({
+    auth: '',
+})
 
 // returns an object describing the number of times, an author has contributed to a file
 async function getContributionData(owner, repo, commitCount) {
-    const octokit = new Octokit({
-        auth: '',
-    })
 
     // find all commits in the repo and determine their shas
     let commitList;
@@ -21,13 +21,12 @@ async function getContributionData(owner, repo, commitCount) {
             })
         } else {
             commitList = (await octokit.rest.repos.listCommits({
-                owner: owner,
-                repo: repo,
+                owner: owner, repo: repo,
                 per_page: commitCount
             })).data
         }
     } catch (error) {
-        return {}
+        return null
     }
 
 
@@ -58,6 +57,52 @@ async function getContributionData(owner, repo, commitCount) {
     bar.stop()
 
     return contributionsPerAuthor;
+}
+
+async function getCommonPRFiles(owner, repo) {
+    let pulls
+    try {
+        pulls = await octokit.rest.pulls.get(
+            {
+                owner: owner,
+                repo: repo
+            }
+        )
+    }
+    catch {
+        return null
+    }
+
+    const shas = pulls.data.map(pull => pull.merge_commit_sha)
+    if (shas.length === 0) {
+        return [];
+    }
+
+    const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
+    bar.start(shas.length, 0)
+    let barCount = 0
+
+    const fileOccurences = {}
+
+    for (const sha of shas) {
+        const commit = await octokit.rest.repos.getCommit({
+            owner: owner,
+            repo: repo,
+            ref: sha
+        })
+
+        commit.data.files.forEach(file => {
+            fileOccurences[file.filename] = (file.filename in fileOccurences) ?
+                fileOccurences[file.filename] + 1 : 1
+        })
+
+        barCount++
+        bar.update(barCount)
+    }
+
+    bar.stop()
+
+    return Object.entries(fileOccurences).sort(([f1, c1], [f2, c2]) => c2 - c1).slice(0, 5)
 }
 
 // uses the contribution data to determine the pairs of developers, who are coupled the most
@@ -96,25 +141,27 @@ function computeBestCouples(contributionsPerAuthor) {
 
 
 async function main() {
-    const usageText = 'Usage:\nnode main.js [repo-owner] [repo-name]\n-n\t The number of past commits to consider for the analysis. Goes up to 100. Leave out to include all commits'
-    let exit = false
+    const usageText = 'Usage:\nnode main.js [repo-owner] [repo-name]\n-n\t The number of past commits to consider for the analysis. Goes up to 100. Leave out to include all commits\n-a\t Perform an analysis, which returns the files that most commonly appear in pull requests. The -n flag is disregarded if this option is selected '
     let commitCount = -1
+    let fileAnalysis = false
 
     const parser = new OptionParser()
-    parser.addOption('n', 'number', '').argument('').action((value) => commitCount = parseInt(value))
+    parser.addOption('n', 'number', '').argument('NUMBER').action((value) => commitCount = parseInt(value))
+    parser.addOption('a', null, '').action(() => fileAnalysis = true)
     parser.addOption('h', 'help', '').action(() => {
-        exit = true
     })
     let unparsed;
 
     try {
         unparsed = parser.parse()
     } catch (error) {
+        console.log('parsing')
         console.log(usageText)
         return
     }
 
     if (unparsed.length !== 2 || isNaN(commitCount)) {
+        console.log('args')
         console.log(usageText)
         return
     }
@@ -122,28 +169,42 @@ async function main() {
     let owner = unparsed[0]
     let repo = unparsed[1]
 
-    const contributionsPerAuthor = await getContributionData(owner, repo, commitCount)
+    if (!fileAnalysis) {
+        const contributionsPerAuthor = await getContributionData(owner, repo, commitCount)
 
-    if (Object.entries(contributionsPerAuthor).length === 0) {
-        console.log('The owner or the repo may not exist')
-        return
-    }
+        if (contributionsPerAuthor === null) {
+            console.log('The owner or the repo may not exist')
+            return
+        }
 
-    const bestCouples = computeBestCouples(contributionsPerAuthor)
+        const bestCouples = computeBestCouples(contributionsPerAuthor)
 
-    if (bestCouples.length === 0) {
-        console.log('No coupling found between any developer')
-        console.log('This may be, because all the developers work independently, or too few commits have been analyzed')
-    } else if (bestCouples.length === 1) {
-        console.log(`The developers, who are coupled the most are: ${bestCouples[0][0]} and ${bestCouples[0][1]}!`)
-        console.log(`They have contributed to the same files a total number of ${bestCouples[0][2]} times`)
+        if (bestCouples.length === 0) {
+            console.log('No coupling found between any developer')
+            console.log('This may be, because all the developers work independently, or too few commits have been analyzed')
+        } else if (bestCouples.length === 1) {
+            console.log(`The developers, who are coupled the most are: ${bestCouples[0][0]} and ${bestCouples[0][1]}!`)
+            console.log(`They have contributed to the same files a total number of ${bestCouples[0][2]} times`)
+        } else {
+            console.log('There are multiple pairs of developers, who are coupled the most!')
+            console.log(`The pairs have contributed to the same files a total number of ${bestCouples[0][2]} times`)
+            console.log('The pairs are:')
+            bestCouples.forEach((couple) => { console.log(`${couple[0]} and ${couple[1]}`) })
+
+        }
     } else {
-        console.log('There are multiple pairs of developers, who are coupled the most!')
-        console.log(`The pairs have contributed to the same files a total number of ${bestCouples[0][2]} times`)
-        console.log('The pairs are:')
-        bestCouples.forEach((couple) => {console.log(`${couple[0]} and ${couple[1]}`)})
-
+        const mostCommonFiles = await getCommonPRFiles(owner, repo)
+        if (mostCommonFiles === null) {
+            console.log('The owner or the repo may not exist')
+            return
+        }
+        if (mostCommonFiles.length === 0) {
+            console.log('There are no pull requests related to this repo')
+            return
+        }
+        console.log('The most common files across pull requests are:')
+        mostCommonFiles.forEach(file => console.log(`\t"${file[0]}" (occured ${file[1]} time(s))`))
     }
-}
 
+}
 main()
