@@ -30,7 +30,9 @@ async function getContributionData(owner, repo, commitCount) {
     }
 
 
+    // a list of authors with the sha of their commits
     const shasWithAuthor = commitList.map(commit => [commit.sha, commit.author.login])
+
     const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
     bar.start(shasWithAuthor.length, 0)
     let barCount = 0
@@ -59,6 +61,7 @@ async function getContributionData(owner, repo, commitCount) {
     return contributionsPerAuthor;
 }
 
+// return the five files, which appear in pull requests most often
 async function getCommonPRFiles(owner, repo) {
     let pulls
     try {
@@ -73,6 +76,7 @@ async function getCommonPRFiles(owner, repo) {
         return null
     }
 
+    // get merge commits of every pr
     const shas = pulls.data.map(pull => pull.merge_commit_sha)
     if (shas.length === 0) {
         return [];
@@ -82,6 +86,7 @@ async function getCommonPRFiles(owner, repo) {
     bar.start(shas.length, 0)
     let barCount = 0
 
+    // object containing file names and the number of times they occur across prs
     const fileOccurences = {}
 
     for (const sha of shas) {
@@ -91,6 +96,7 @@ async function getCommonPRFiles(owner, repo) {
             ref: sha
         })
 
+        // update occurences for every file
         commit.data.files.forEach(file => {
             fileOccurences[file.filename] = (file.filename in fileOccurences) ?
                 fileOccurences[file.filename] + 1 : 1
@@ -102,6 +108,7 @@ async function getCommonPRFiles(owner, repo) {
 
     bar.stop()
 
+    // only return the five most common ones
     return Object.entries(fileOccurences).sort(([f1, c1], [f2, c2]) => c2 - c1).slice(0, 5)
 }
 
