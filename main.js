@@ -31,6 +31,7 @@ async function getContributionData(owner, repo, commitCount) {
 
 
     // a list of authors with the sha of their commits
+    commitList = commitList.filter(commit => commit.author !== null)
     const shasWithAuthor = commitList.map(commit => [commit.sha, commit.author.login])
 
     const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
